@@ -9,7 +9,10 @@ type P = (Int,Int)
 files = "abcdefgh"
 
 ------- utilities ---------
+-- check if a square is inside the board
 inBounds (x,y) = x>=1 && x<=8 && y>=1 && y<=8
+
+-- parse square from string like "e2" into (x,y)
 parseSq :: String -> Maybe P
 parseSq [f,r]
   | f' >=1 && f'<=8 && r' >=1 && r'<=8 = Just (f', r')
@@ -17,9 +20,10 @@ parseSq [f,r]
         r' = fromEnum r - fromEnum '0'
 parseSq _ = Nothing
 
+-- convert (x,y) to string like "e2"
 showSq (x,y) = files !! (x-1) : show y
 
--- Pretty board print
+-- pretty print the board
 printBoard wk qpos bk = do
   putStrLn "  a b c d e f g h"
   mapM_ printRank [8,7..1]
@@ -34,34 +38,35 @@ printBoard wk qpos bk = do
           | otherwise = putStr ". "
 
 
----- Chess utilities ----
--- distance (Chebyshev), used for distance from kings
+---- chess utilities ----
+-- compute chebyshev distance between two squares
 dist (x1,y1) (x2,y2) = max (abs (x1-x2)) (abs (y1-y2))
 
+-- generate all king moves from a square
 kingMoves p = filter inBounds [(x+dx,y+dy) | dx<-[-1..1], dy<-[-1..1], (dx,dy) /= (0,0)]
   where (x,y)=p
 
--- Queen moves (rays) until blocked by board edge or by white king.
+-- generate queen moves (rays) until hitting board edge or white king
 queenRays (qx,qy) wk = concatMap (ray (qx,qy)) directions
   where directions = [(1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)]
         ray (x,y) (dx,dy) = go (x+dx,y+dy)
           where go p@(nx,ny)
                   | not (inBounds p) = []
-                  | p == wk = [] -- can't pass through white king
+                  | p == wk = [] -- stop at white king
                   | otherwise = p : go (nx+dx, ny+dy)
 
--- Squares attacked by queen (same as queenRays but including the line up to blocking square)
+-- squares attacked by queen, stopping at black king
 queenAttacks (qx,qy) wk bk = concatMap (att (qx,qy)) directions
   where directions = [(1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)]
         att (x,y) (dx,dy) = go (x+dx,y+dy)
           where go p@(nx,ny)
                   | not (inBounds p) = []
-                  | p == wk = [] -- line blocked by white king
+                  | p == wk = [] -- stop at white king
                   | otherwise = p : if p == bk then [] else go (nx+dx, ny+dy)
 
--- Check if square attacked by white (queen or king)
+-- check if a square is attacked by white (king or queen)
 isAttackedByWhite sq qpos kpos = sq `elem` qAtt || sq `elem` kAtt
-  where qAtt = queenAttacks qpos kpos sq -- note: queenAttacks takes bk to stop at it
+  where qAtt = queenAttacks qpos kpos sq
         kAtt = kingMoves kpos
 
 -- BFS for black freedom.
@@ -80,38 +85,41 @@ blackFreedom bkPos wk qpos = S.size visited
     bfs forbidden vis (p:ps) =
       let next = [n | n <- kingMoves p, inBounds n, not (n `S.member` forbidden), not (n `S.member` vis)]
       in bfs forbidden (S.union vis (S.fromList next)) (ps ++ next)
-  
--- Generate candidate queen moves 
+
+-- generate all candidate queen moves
 allQueenCandidates qpos wk bk = nub [p | p <- queenRays qpos wk, p /= bk]
 
--- queen is capturable when adjacent to black king and not defended by white king
+-- check if queen can be captured by black king
 queenCapturable qpos wk bk = (dist qpos bk == 1) && (dist qpos wk > 1)
 
+-- generate legal white king moves
 whiteKingCandidates wk qpos bk = filter ok $ wk : kingMoves wk
-  where ok p = inBounds p && p /= qpos && dist p bk > 1 -- king cannot move adjacent to other king
+  where ok p = inBounds p && p /= qpos && dist p bk > 1
 
+-- check if square is attacked by black king
 attackedByBlack sq bk = dist sq bk == 1
 
+-- generate legal moves for black king
 legalBlackMoves bk wk qpos = filter legal $ bk : kingMoves bk
   where occupied = S.fromList [wk,qpos, bk]
-        -- square is attacked by queen if it's in queenAttacks
         qAtt = queenAttacks qpos wk bk
         legal s = inBounds s && s /= wk && s /= qpos && s /= bk && dist s wk > 1 && not (s `elem` qAtt)
 
+-- check if black is in check
 blackInCheck bk wk qpos = bk `elem` queenAttacks qpos wk bk || dist bk wk == 1
 
--- checkmate / stalemate
+-- detect checkmate or stalemate
 isCheckmate bk wk qpos = null (legalBlackMoves bk wk qpos) && blackInCheck bk wk qpos
 isStalemate bk wk qpos = null (legalBlackMoves bk wk qpos) && not (blackInCheck bk wk qpos)
 
--- Evaluate queen move: compute freedom after move, but also check queen safety & avoid stalemate
+-- score queen moves: freedom, capturability, stalemate
 scoreQueenMove cand wk bk =
   let freedom = blackFreedom bk wk cand
       capturable = queenCapturable cand wk bk
       stal = isStalemate bk wk cand
   in if capturable then (1000, freedom, True) else if stal then (900, freedom, False) else (freedom, freedom, False)
-  -- we return tuple prioritized so we can choose min properly: prefer smallest freedom; but huge penalty if capturable
 
+-- choose best queen move based on score
 chooseQueenMove :: P -> P -> P -> P
 chooseQueenMove qpos wk bk =
   let cands = allQueenCandidates qpos wk bk
@@ -122,7 +130,7 @@ chooseQueenMove qpos wk bk =
       best = minimumBy (comparing (\(cand,(f,_,_)) -> (f, dist cand bk))) pool
   in fst best
 
--- move white king toward black king - reducing distance
+-- move white king closer to black king
 moveWhiteKingCloser wk qpos bk =
   let cands = whiteKingCandidates wk qpos bk
       better = filter (\p -> dist p bk < dist wk bk) cands
